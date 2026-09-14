@@ -673,6 +673,19 @@ class BasePokemonCrystalStateParser(PokemonStateParser, ABC):
 
 
 class PokemonRedStateParser(BasePokemonRedStateParser):
+    # Saved visual references for the Town Map HLA. These are Red-only because
+    # the item and map UI text can differ in Gen-I ROM hacks.
+    _MAP_REFERENCE_REGIONS = (
+        ("town_map_cursor", 36, 43, 76, 12),
+    )
+
+    # Live-only boxes: the action stores and compares their current image
+    # arrays, so they intentionally have no saved .npy target image.
+    _MAP_LIVE_REGIONS = (
+        ("item_menu_list", 36, 27, 76, 64),
+        ("map_location_text", 4, 0, 139, 9),
+    )
+
     _START_MENU_FIRST_OPTION_TARGETS = (
         "pokedex_cursor",
         "pokedex_no_cursor",
@@ -783,6 +796,26 @@ class PokemonRedStateParser(BasePokemonRedStateParser):
             parameters=parameters,
             override_multi_targets=override_multi_targets,
         )
+        captures_dir = os.path.join(self.rom_data_path, "captures")
+        for name, x, y, width, height in self._MAP_REFERENCE_REGIONS:
+            self.named_screen_regions[name] = NamedScreenRegion(
+                name,
+                x,
+                y,
+                width,
+                height,
+                parameters=parameters,
+                target_path=os.path.join(captures_dir, name),
+            )
+        for name, x, y, width, height in self._MAP_LIVE_REGIONS:
+            self.named_screen_regions[name] = NamedScreenRegion(
+                name,
+                x,
+                y,
+                width,
+                height,
+                parameters=parameters,
+            )
 
     def is_start_menu_open(self, current_screen: np.ndarray) -> bool:
         """Returns whether the Pokémon Red START menu is visibly open."""

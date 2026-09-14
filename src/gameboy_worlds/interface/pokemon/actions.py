@@ -1003,6 +1003,233 @@ class GetTeamInfoAction(SingleHighLevelAction):
         return "GetTeamInfo"
 
 
+class GetMapLocationAction(SingleHighLevelAction):
+    """Use Red's TOWN MAP item and return the live location-text image.
+
+    This is deliberately visual-only. It normalizes the ITEM cursor with the
+    user-defined five-unchanged-UP rule, then identifies TOWN MAP plus its
+    cursor by matching the captured row image at the current row position.
+    """
+
+    REQUIRED_STATE_PARSER = PokemonStateParser
+    REQUIRED_STATE_TRACKER = CorePokemonTracker
+
+    _MAX_START_MENU_UP_PRESSES = 6
+    _STABLE_ITEM_LIST_PRESSES = 5
+    _ITEM_ROW_X = 36
+    _ITEM_ROW_1_Y = 27
+    _ITEM_ROW_WIDTH = 76
+    _ITEM_ROW_HEIGHT = 12
+    _ITEM_ROW_GAP = 16
+    _MAX_EXIT_B_PRESSES = 3
+    _MAX_EXIT_START_PRESSES = 4
+    _EMULATED_SECOND_TICKS = 60
+
+    def is_valid(self, **kwargs):
+        return isinstance(self._emulator.state_parser, PokemonRedStateParser) and (
+            self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
+            == AgentState.FREE_ROAM
+        )
+
+    def _step_and_report(self, action, transition_states):
+        self._emulator.step(action)
+        transition_states.append(self._state_tracker.report())
+
+    def _wait_one_emulated_second(self, transition_states):
+        wait_ticks = max(1, self._emulator.wait_ticks)
+        wait_steps = (
+            self._EMULATED_SECOND_TICKS + wait_ticks - 1
+        ) // wait_ticks
+        for _ in range(wait_steps):
+            self._step_and_report(None, transition_states)
+
+    @staticmethod
+    def _set_action_return(transition_states, **result):
+        transition_states[-1]["core"]["action_return"] = result
+
+    def _failure(self, transition_states, reason):
+        self._set_action_return(
+            transition_states,
+            map_present=None,
+            location_image=None,
+            reason=reason,
+        )
+        return transition_states, -1
+
+    def _open_item_menu(self, parser, transition_states) -> bool:
+        """Open ITEM from either Red START-menu layout."""
+        self._step_and_report(LowLevelActions.PRESS_BUTTON_START, transition_states)
+        self._wait_one_emulated_second(transition_states)
+
+        for _ in range(self._MAX_START_MENU_UP_PRESSES + 1):
+            first_option = parser.get_start_menu_first_option(
+                self._emulator.get_current_frame()
+            )
+            if first_option == "pokemon_cursor":
+                item_down_presses = 1
+                break
+            if first_option == "pokedex_cursor":
+                item_down_presses = 2
+                break
+            if first_option in ("pokemon_no_cursor", "pokedex_no_cursor"):
+                self._step_and_report(
+                    LowLevelActions.PRESS_ARROW_UP, transition_states
+                )
+                self._wait_one_emulated_second(transition_states)
+                continue
+            return False
+        else:
+            return False
+
+        for _ in range(item_down_presses):
+            self._step_and_report(
+                LowLevelActions.PRESS_ARROW_DOWN, transition_states
+            )
+            self._wait_one_emulated_second(transition_states)
+        self._step_and_report(LowLevelActions.PRESS_BUTTON_A, transition_states)
+        self._wait_one_emulated_second(transition_states)
+        return True
+
+    def _move_to_stable_top_of_item_list(self, parser, transition_states):
+        """Press UP until the full visible item list is unchanged five times."""
+        unchanged_up_count = 0
+        while unchanged_up_count < self._STABLE_ITEM_LIST_PRESSES:
+            before = parser.capture_named_region(
+                self._emulator.get_current_frame(), "item_menu_list"
+            )
+            self._step_and_report(LowLevelActions.PRESS_ARROW_UP, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            after = parser.capture_named_region(
+                self._emulator.get_current_frame(), "item_menu_list"
+            )
+            if np.array_equal(before, after):
+                unchanged_up_count += 1
+            else:
+                unchanged_up_count = 0
+
+    def _visible_item_is_town_map(self, parser):
+        """Check all four visible rows for the captured TOWN MAP + cursor."""
+        for row_index in range(4):
+            item_row_y = self._ITEM_ROW_1_Y + row_index * self._ITEM_ROW_GAP
+            current_item_row = parser.capture_box(
+                self._emulator.get_current_frame(),
+                self._ITEM_ROW_X,
+                item_row_y,
+                self._ITEM_ROW_WIDTH,
+                self._ITEM_ROW_HEIGHT,
+            )
+            if parser.named_screen_regions["town_map_cursor"].matches_target(
+                current_item_row
+            ):
+                return True
+        return False
+
+    def _exit_item_or_map_to_free_roam(self, parser, transition_states) -> bool:
+        """Back out to the START menu, then close it without reopening it."""
+        for _ in range(self._MAX_EXIT_B_PRESSES):
+            if (
+                parser.get_start_menu_first_option(self._emulator.get_current_frame())
+                is not None
+            ):
+                break
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_B, transition_states)
+            self._wait_one_emulated_second(transition_states)
+        else:
+            return False
+
+        # The tracker can report FREE_ROAM while the visible START menu is
+        # present. Send START once, then retry only while the menu cue remains.
+        self._step_and_report(LowLevelActions.PRESS_BUTTON_START, transition_states)
+        self._wait_one_emulated_second(transition_states)
+        for _ in range(self._MAX_EXIT_START_PRESSES - 1):
+            menu_visible = (
+                parser.get_start_menu_first_option(self._emulator.get_current_frame())
+                is not None
+            )
+            if not menu_visible:
+                return (
+                    self._state_tracker.get_episode_metric(
+                        ("pokemon_core", "agent_state")
+                    )
+                    == AgentState.FREE_ROAM
+                )
+            self._step_and_report(
+                LowLevelActions.PRESS_BUTTON_START, transition_states
+            )
+            self._wait_one_emulated_second(transition_states)
+        return (
+            parser.get_start_menu_first_option(self._emulator.get_current_frame())
+            is None
+            and self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
+            == AgentState.FREE_ROAM
+        )
+
+    def _execute(self):
+        parser: PokemonRedStateParser = self._emulator.state_parser
+        transition_states = []
+        if not self._open_item_menu(parser, transition_states):
+            return self._failure(transition_states, "item_menu_not_open")
+
+        # No fixed empty-menu capture is necessary. Whether the list contains
+        # items or only CANCEL, unchanged UP/DOWN images govern both paths.
+        self._move_to_stable_top_of_item_list(parser, transition_states)
+        unchanged_down_count = 0
+
+        while unchanged_down_count < self._STABLE_ITEM_LIST_PRESSES:
+            if self._visible_item_is_town_map(parser):
+                self._step_and_report(
+                    LowLevelActions.PRESS_BUTTON_A, transition_states
+                )
+                self._wait_one_emulated_second(transition_states)
+                self._step_and_report(
+                    LowLevelActions.PRESS_BUTTON_A, transition_states
+                )
+                self._wait_one_emulated_second(transition_states)
+                location_image = parser.capture_named_region(
+                    self._emulator.get_current_frame(), "map_location_text"
+                ).copy()
+                if not self._exit_item_or_map_to_free_roam(parser, transition_states):
+                    self._set_action_return(
+                        transition_states,
+                        map_present=True,
+                        location_image=location_image,
+                        reason="did_not_return_to_free_roam",
+                    )
+                    return transition_states, -1
+                self._set_action_return(
+                    transition_states,
+                    map_present=True,
+                    location_image=location_image,
+                )
+                return transition_states, 0
+
+            before = parser.capture_named_region(
+                self._emulator.get_current_frame(), "item_menu_list"
+            )
+            self._step_and_report(LowLevelActions.PRESS_ARROW_DOWN, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            after = parser.capture_named_region(
+                self._emulator.get_current_frame(), "item_menu_list"
+            )
+            if np.array_equal(before, after):
+                unchanged_down_count += 1
+            else:
+                unchanged_down_count = 0
+
+        if not self._exit_item_or_map_to_free_roam(parser, transition_states):
+            return self._failure(transition_states, "did_not_return_to_free_roam")
+        self._set_action_return(
+            transition_states,
+            map_present=False,
+            location_image=None,
+        )
+        return transition_states, 1
+
+    @staticmethod
+    def get_action_name() -> str:
+        return "GetMapLocation"
+
+
 class BattleMenuAction(HighLevelAction):
     """
     Allows navigation of the battle menu.

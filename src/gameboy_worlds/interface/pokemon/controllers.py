@@ -9,6 +9,7 @@ from gameboy_worlds.interface.pokemon.actions import (
     MoveGridAction,
     OpenMenuAction,
     GetTeamInfoAction,
+    GetMapLocationAction,
 )
 from gameboy_worlds.interface.controller import Controller
 from gameboy_worlds.interface.action import HighLevelAction
@@ -47,6 +48,7 @@ class PokemonStateWiseController(Controller):
         MoveStepsAction,
         OpenMenuAction,
         GetTeamInfoAction,
+        GetMapLocationAction,
     ]
 
     def string_to_high_level_action(self, input_str):
@@ -62,6 +64,8 @@ class PokemonStateWiseController(Controller):
             return PassDialogueAction, {}
         if action_name == "getteaminfo":
             return GetTeamInfoAction, {}
+        if action_name == "getmaplocation":
+            return GetMapLocationAction, {}
         # Now handle the actions with fixed options
         if action_name == "battlemenu":
             option = action_args_str.strip()
@@ -121,6 +125,7 @@ class PokemonStateWiseController(Controller):
             InteractAction: "interact(): Interact with cell directly in front of you. Only works if there is something to interact with.",
             OpenMenuAction: "openmenu(<pokedex, pokemon, bag, trainer>): Open a specific player menu option.",
             GetTeamInfoAction: "getteaminfo(): Open POKéMON from the START menu and return live name, HP, type, move, and PP image crops for every Pokémon in the party.",
+            GetMapLocationAction: "getmaplocation(): Use TOWN MAP from ITEM and return the live top location-text image, or report that TOWN MAP is absent.",
         }
         dialogue_action_strings = {
             PassDialogueAction: "passdialogue(): Advance the dialogue by one step.",
