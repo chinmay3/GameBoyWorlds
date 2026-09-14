@@ -699,13 +699,13 @@ class PokemonRedStateParser(BasePokemonRedStateParser):
     # Live text crops from the selected Pokémon's stats and moves pages.  These
     # are intentionally coordinates only: their contents vary by Pokémon, so
     # they do not use saved .npy reference captures.
-    _TYPE_1_REGION = (78, 79, 53, 9)
-    _TYPE_2_REGION = (78, 95, 53, 9)
+    _TYPE_1_REGION = (78, 79, 59, 9)
+    _TYPE_2_REGION = (78, 95, 59, 9)
     _MOVE_NAME_REGIONS = (
-        (14, 71, 90, 10),
-        (14, 86, 90, 8),
-        (14, 102, 90, 8),
-        (14, 118, 90, 8),
+        (14, 71, 96, 10),
+        (14, 86, 96, 10),
+        (14, 102, 96, 10),
+        (14, 118, 96, 10),
     )
     _MOVE_PP_REGIONS = (
         (110, 79, 42, 9),
