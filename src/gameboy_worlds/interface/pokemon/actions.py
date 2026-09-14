@@ -709,21 +709,23 @@ class OpenMenuAction(HighLevelAction):
 
 
 class GetTeamInfoAction(SingleHighLevelAction):
-    """Opens the Pokémon Red party screen and returns its live slot captures.
+    """Opens the Pokémon Red party screen and returns complete live party data.
 
     Is Valid When:
     - In Free Roam State
 
     Action Success Interpretation:
     - -1: The START menu or one of its expected visual states was not found.
-    - 0: The Pokémon party screen opened; ``team_info`` contains its live crops.
+    - 0: The Pokémon party screen opened; ``team_info`` contains each Pokémon's
+      live name, HP, type, move, and PP crops.
     - 1: The START menu remained open after selecting POKéMON, indicating no party.
 
     Action Returns:
     - ``team_present`` (bool): Whether the party screen opened.
-    - ``team_info`` (dict | None): Six live party-slot dictionaries.  Each
-      occupied slot contains ``name_image`` and ``hp_image`` numpy arrays.
-      None when no Pokémon are present.
+    - ``team_info`` (dict | None): One dictionary per occupied party slot,
+      collected from the party, stats, and moves pages.  Text values are numpy
+      image arrays for a downstream OCR/VLM consumer. None when no Pokémon are
+      present.
     """
 
     # PokemonStateWiseController is shared by several Pokémon variants. Keep its
@@ -733,6 +735,11 @@ class GetTeamInfoAction(SingleHighLevelAction):
     REQUIRED_STATE_TRACKER = CorePokemonTracker
 
     _MAX_UP_PRESSES = 6
+    _MAX_STATS_DOWN_PRESSES = 4
+    _MAX_TEAM_SLOTS = 6
+    _MAX_MOVES_PAGE_A_PRESSES = 4
+    _MAX_RETURN_TO_PARTY_B_PRESSES = 4
+    _MAX_RETURN_TO_FREE_ROAM_START_PRESSES = 4
     _EMULATED_SECOND_TICKS = 60
 
     def is_valid(self, **kwargs):
@@ -765,6 +772,67 @@ class GetTeamInfoAction(SingleHighLevelAction):
         ) // wait_ticks
         for _ in range(wait_steps):
             self._step_and_report(None, transition_states)
+
+    def _move_cursor_to_stats(self, parser, transition_states) -> bool:
+        """Move through a Pokémon action menu until its cursor is on STATS."""
+        for down_presses in range(self._MAX_STATS_DOWN_PRESSES + 1):
+            if parser.named_region_matches_target(
+                self._emulator.get_current_frame(),
+                "pokemon_action_menu_pointer_at_stats",
+            ):
+                return True
+            if down_presses == self._MAX_STATS_DOWN_PRESSES:
+                return False
+            self._step_and_report(LowLevelActions.PRESS_ARROW_DOWN, transition_states)
+            self._wait_one_emulated_second(transition_states)
+        return False
+
+    def _open_moves_page(self, parser, transition_states) -> bool:
+        """Press A until the fixed PP label confirms that the moves page opened."""
+        for _ in range(self._MAX_MOVES_PAGE_A_PRESSES):
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_A, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            if parser.named_region_matches_target(
+                self._emulator.get_current_frame(), "pokemon_moves_pp_label"
+            ):
+                return True
+        return False
+
+    def _return_to_party_list(self, parser, transition_states) -> bool:
+        """Press B until the existing party-list HP cue is visible again."""
+        for _ in range(self._MAX_RETURN_TO_PARTY_B_PRESSES):
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_B, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            if parser.named_region_matches_target(
+                self._emulator.get_current_frame(), "pokemon_list_hp_text"
+            ):
+                return True
+        return False
+
+    def _return_to_free_roam(self, parser, transition_states) -> bool:
+        """Leave the party list with B, then close the START menu with START."""
+        for _ in range(self._MAX_RETURN_TO_PARTY_B_PRESSES):
+            if not parser.named_region_matches_target(
+                self._emulator.get_current_frame(), "pokemon_list_hp_text"
+            ):
+                break
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_B, transition_states)
+            self._wait_one_emulated_second(transition_states)
+        else:
+            return False
+
+        for _ in range(self._MAX_RETURN_TO_FREE_ROAM_START_PRESSES):
+            if (
+                self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
+                == AgentState.FREE_ROAM
+            ):
+                return True
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_START, transition_states)
+            self._wait_one_emulated_second(transition_states)
+        return (
+            self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
+            == AgentState.FREE_ROAM
+        )
 
     def _execute(self):
         parser: PokemonRedStateParser = self._emulator.state_parser
@@ -831,16 +899,81 @@ class GetTeamInfoAction(SingleHighLevelAction):
             )
             return transition_states, 1
 
-        # The metric updates its live image-array dictionary on every emulator
-        # step.  Keep those arrays out of ordinary state logs, then attach the
-        # final party-screen capture only to this action's return value.
-        team_info = self._state_tracker.metrics["pokemon_team_info"].team_info
-        self._set_action_return(
-            transition_states,
-            team_present=True,
-            team_info=team_info,
+        # The party screen must open with the cursor on slot 1.  This same
+        # pointer is checked after moving down later to detect the circular wrap
+        # from the final Pokémon back to slot 1.
+        if not parser.named_region_matches_target(
+            self._emulator.get_current_frame(), "pokemon_list_pointer_top"
+        ):
+            return self._navigation_failure(
+                transition_states, "party_list_pointer_not_at_top"
+            )
+
+        pokemon = []
+        for slot_index in range(self._MAX_TEAM_SLOTS):
+            # Read only the currently selected party row before opening it.
+            pokemon_info = parser.get_team_slot_info(
+                self._emulator.get_current_frame(), slot_index
+            )
+
+            # Open this Pokémon's action menu and locate STATS from whichever
+            # option the menu initially selected.
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_A, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            if not self._move_cursor_to_stats(parser, transition_states):
+                return self._navigation_failure(
+                    transition_states, "pokemon_action_menu_stats_not_found"
+                )
+
+            # STATS page: read Type 1 and Type 2, including blank crops.
+            self._step_and_report(LowLevelActions.PRESS_BUTTON_A, transition_states)
+            self._wait_one_emulated_second(transition_states)
+            pokemon_info.update(
+                parser.get_current_pokemon_types(self._emulator.get_current_frame())
+            )
+
+            # The game can ignore the first A while the stats page settles. The
+            # fixed PP label proves that the moves page actually opened before
+            # its changing move/PP text is captured.
+            if not self._open_moves_page(parser, transition_states):
+                return self._navigation_failure(
+                    transition_states, "pokemon_moves_page_not_open"
+                )
+            pokemon_info["moves"] = parser.get_current_pokemon_moves(
+                self._emulator.get_current_frame()
+            )
+
+            # Return to the party list, save this Pokémon, then advance once.
+            if not self._return_to_party_list(parser, transition_states):
+                return self._navigation_failure(
+                    transition_states, "party_list_not_restored"
+                )
+            pokemon.append(pokemon_info)
+            self._step_and_report(LowLevelActions.PRESS_ARROW_DOWN, transition_states)
+            self._wait_one_emulated_second(transition_states)
+
+            if parser.named_region_matches_target(
+                self._emulator.get_current_frame(), "pokemon_list_pointer_top"
+            ):
+                team_info = {"slots": pokemon}
+                if not self._return_to_free_roam(parser, transition_states):
+                    self._set_action_return(
+                        transition_states,
+                        team_present=True,
+                        team_info=team_info,
+                        reason="did_not_return_to_free_roam",
+                    )
+                    return transition_states, -1
+                self._set_action_return(
+                    transition_states,
+                    team_present=True,
+                    team_info=team_info,
+                )
+                return transition_states, 0
+
+        return self._navigation_failure(
+            transition_states, "party_list_did_not_wrap_to_top"
         )
-        return transition_states, 0
 
     @staticmethod
     def get_action_name() -> str:

@@ -492,6 +492,9 @@ class BasePokemonRedStateParser(PokemonStateParser, ABC):
         ("pokedex_top_left", 7, 6, 12, 6),
         ("pokedex_info_mid_left", 6, 71, 6, 6),
         ("pokemon_list_hp_text", 32, 9, 10, 5),
+        ("pokemon_list_pointer_top", 0, 8, 5, 8),
+        ("pokemon_action_menu_pointer_at_stats", 94, 96, 8, 9),
+        ("pokemon_moves_pp_label", 80, 79, 12, 9),
         ("pokemon_stats_line", 66, 55, 5, 5),
         ("battle_bag_options_bottom_left", 32, 96, 5, 5),
         ("start_menu_top_right", 150, 1, 8, 6),
@@ -693,6 +696,24 @@ class PokemonRedStateParser(BasePokemonRedStateParser):
     _TEAM_HP_HEIGHT = 9
     _TEAM_OCCUPIED_DARK_PIXELS = 10
 
+    # Live text crops from the selected Pokémon's stats and moves pages.  These
+    # are intentionally coordinates only: their contents vary by Pokémon, so
+    # they do not use saved .npy reference captures.
+    _TYPE_1_REGION = (78, 79, 53, 9)
+    _TYPE_2_REGION = (78, 95, 53, 9)
+    _MOVE_NAME_REGIONS = (
+        (14, 71, 90, 10),
+        (14, 86, 90, 8),
+        (14, 102, 90, 8),
+        (14, 118, 90, 8),
+    )
+    _MOVE_PP_REGIONS = (
+        (110, 79, 42, 9),
+        (110, 95, 42, 9),
+        (110, 111, 42, 9),
+        (110, 127, 42, 9),
+    )
+
     def __init__(self, pyboy, parameters):
         override_multi_targets = {
             "dialogue_box_middle": [
@@ -815,6 +836,60 @@ class PokemonRedStateParser(BasePokemonRedStateParser):
                 }
             )
         return {"slots": slots}
+
+    def get_team_slot_info(self, current_screen: np.ndarray, slot_index: int) -> dict:
+        """Return the live name and HP crops for one zero-based party-list slot."""
+        if not 0 <= slot_index < self._TEAM_SLOT_COUNT:
+            raise ValueError(f"Party slot index must be 0-{self._TEAM_SLOT_COUNT - 1}")
+
+        row_y = self._TEAM_SLOT_Y + slot_index * self._TEAM_SLOT_HEIGHT
+        name_image = self.capture_box(
+            current_screen,
+            self._TEAM_NAME_X,
+            row_y,
+            self._TEAM_NAME_WIDTH,
+            self._TEAM_NAME_HEIGHT,
+        ).copy()
+        hp_image = self.capture_box(
+            current_screen,
+            self._TEAM_HP_X,
+            row_y + self._TEAM_HP_Y_OFFSET,
+            self._TEAM_HP_WIDTH,
+            self._TEAM_HP_HEIGHT,
+        ).copy()
+        return {
+            "slot": slot_index + 1,
+            "occupied": bool(
+                np.count_nonzero(name_image < 128) > self._TEAM_OCCUPIED_DARK_PIXELS
+            ),
+            "name_image": name_image,
+            "hp_image": hp_image,
+        }
+
+    def get_current_pokemon_types(self, current_screen: np.ndarray) -> dict:
+        """Return live Type 1 and Type 2 image crops from a stats page."""
+        return {
+            "type_1": self.capture_box(
+                current_screen, *self._TYPE_1_REGION
+            ).copy(),
+            "type_2": self.capture_box(
+                current_screen, *self._TYPE_2_REGION
+            ).copy(),
+        }
+
+    def get_current_pokemon_moves(self, current_screen: np.ndarray) -> dict:
+        """Return live move-name and PP image crops from a moves page."""
+        moves = {}
+        for move_index, (name_region, pp_region) in enumerate(
+            zip(self._MOVE_NAME_REGIONS, self._MOVE_PP_REGIONS), start=1
+        ):
+            moves[f"move_{move_index}_name"] = self.capture_box(
+                current_screen, *name_region
+            ).copy()
+            moves[f"move_{move_index}_pp"] = self.capture_box(
+                current_screen, *pp_region
+            ).copy()
+        return moves
 
 
 class PokemonBrownStateParser(BasePokemonRedStateParser):
