@@ -893,6 +893,34 @@ class PokemonRedStateParser(BasePokemonRedStateParser):
 
 
 class PokemonBrownStateParser(BasePokemonRedStateParser):
+    # Pokémon Brown uses the same Gen-I party, stats, and moves layouts as
+    # Pokémon Red. Reuse Red's visual extraction helpers while loading Brown's
+    # own text-based menu captures below.
+    _START_MENU_FIRST_OPTION_TARGETS = (
+        PokemonRedStateParser._START_MENU_FIRST_OPTION_TARGETS
+    )
+    _TEAM_SLOT_COUNT = PokemonRedStateParser._TEAM_SLOT_COUNT
+    _TEAM_SLOT_Y = PokemonRedStateParser._TEAM_SLOT_Y
+    _TEAM_SLOT_HEIGHT = PokemonRedStateParser._TEAM_SLOT_HEIGHT
+    _TEAM_NAME_X = PokemonRedStateParser._TEAM_NAME_X
+    _TEAM_NAME_WIDTH = PokemonRedStateParser._TEAM_NAME_WIDTH
+    _TEAM_NAME_HEIGHT = PokemonRedStateParser._TEAM_NAME_HEIGHT
+    _TEAM_HP_X = PokemonRedStateParser._TEAM_HP_X
+    _TEAM_HP_Y_OFFSET = PokemonRedStateParser._TEAM_HP_Y_OFFSET
+    _TEAM_HP_WIDTH = PokemonRedStateParser._TEAM_HP_WIDTH
+    _TEAM_HP_HEIGHT = PokemonRedStateParser._TEAM_HP_HEIGHT
+    _TEAM_OCCUPIED_DARK_PIXELS = PokemonRedStateParser._TEAM_OCCUPIED_DARK_PIXELS
+    _TYPE_1_REGION = PokemonRedStateParser._TYPE_1_REGION
+    _TYPE_2_REGION = PokemonRedStateParser._TYPE_2_REGION
+    _MOVE_NAME_REGIONS = PokemonRedStateParser._MOVE_NAME_REGIONS
+    _MOVE_PP_REGIONS = PokemonRedStateParser._MOVE_PP_REGIONS
+
+    is_start_menu_open = PokemonRedStateParser.is_start_menu_open
+    get_start_menu_first_option = PokemonRedStateParser.get_start_menu_first_option
+    get_team_slot_info = PokemonRedStateParser.get_team_slot_info
+    get_current_pokemon_types = PokemonRedStateParser.get_current_pokemon_types
+    get_current_pokemon_moves = PokemonRedStateParser.get_current_pokemon_moves
+
     def __init__(self, pyboy, parameters):
         override_multi_targets = {
             "dialogue_box_middle": [
@@ -906,11 +934,23 @@ class PokemonBrownStateParser(BasePokemonRedStateParser):
                 "collect_psi_badge",
                 "collect_championship",
             ],
+            "start_menu_first_option": [
+                "pokedex_cursor",
+                "pokedex_no_cursor",
+                "pokemon_cursor",
+                "pokemon_no_cursor",
+            ],
         }
+        override_regions = [
+            # Red's PP-label reference overlaps dynamic move-name pixels in
+            # Brown. This box contains only Brown's fixed PP label.
+            ("pokemon_moves_pp_label", 95, 79, 12, 9),
+        ]
         super().__init__(
             pyboy,
             variant="pokemon_brown",
             parameters=parameters,
+            override_regions=override_regions,
             override_multi_targets=override_multi_targets,
         )
 

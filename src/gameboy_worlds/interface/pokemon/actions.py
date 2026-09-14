@@ -5,6 +5,7 @@ from gameboy_worlds.emulation.pokemon.parsers import (
     PokemonStateParser,
     BasePokemonRedStateParser,
     PokemonRedStateParser,
+    PokemonBrownStateParser,
 )
 from gameboy_worlds.emulation.pokemon.trackers import CorePokemonTracker
 from gameboy_worlds.emulation import LowLevelActions
@@ -736,14 +737,19 @@ class GetTeamInfoAction(SingleHighLevelAction):
 
     _MAX_UP_PRESSES = 6
     _MAX_STATS_DOWN_PRESSES = 4
-    _MAX_TEAM_SLOTS = 6
+    # The party-list pointer wrapping back to the first row is the completion
+    # condition. This is merely a guard against an unexpected non-wrapping UI.
+    _MAX_TEAM_ITERATIONS = 10
     _MAX_MOVES_PAGE_A_PRESSES = 4
     _MAX_RETURN_TO_PARTY_B_PRESSES = 4
     _MAX_RETURN_TO_FREE_ROAM_START_PRESSES = 4
     _EMULATED_SECOND_TICKS = 60
 
     def is_valid(self, **kwargs):
-        return isinstance(self._emulator.state_parser, PokemonRedStateParser) and (
+        return isinstance(
+            self._emulator.state_parser,
+            (PokemonRedStateParser, PokemonBrownStateParser),
+        ) and (
             self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
             == AgentState.FREE_ROAM
         )
@@ -810,7 +816,7 @@ class GetTeamInfoAction(SingleHighLevelAction):
         return False
 
     def _return_to_free_roam(self, parser, transition_states) -> bool:
-        """Leave the party list with B, then close the START menu with START."""
+        """Leave the party list with B, then visibly close the START menu."""
         for _ in range(self._MAX_RETURN_TO_PARTY_B_PRESSES):
             if not parser.named_region_matches_target(
                 self._emulator.get_current_frame(), "pokemon_list_hp_text"
@@ -821,8 +827,23 @@ class GetTeamInfoAction(SingleHighLevelAction):
         else:
             return False
 
-        for _ in range(self._MAX_RETURN_TO_FREE_ROAM_START_PRESSES):
+        # Always attempt START once after B returns from the party list. The
+        # tracker can incorrectly say FREE_ROAM while the visible START menu
+        # remains open. A second START is only safe if the menu cue persists:
+        # blindly sending two START presses would close and then reopen it.
+        self._step_and_report(LowLevelActions.PRESS_BUTTON_START, transition_states)
+        self._wait_one_emulated_second(transition_states)
+
+        for _ in range(self._MAX_RETURN_TO_FREE_ROAM_START_PRESSES - 1):
+            # The tracker can label a visible START menu as FREE_ROAM. The
+            # captured first menu row is the authoritative cue while closing.
+            menu_still_visible = (
+                parser.get_start_menu_first_option(self._emulator.get_current_frame())
+                is not None
+            )
             if (
+                not menu_still_visible
+                and
                 self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
                 == AgentState.FREE_ROAM
             ):
@@ -830,12 +851,14 @@ class GetTeamInfoAction(SingleHighLevelAction):
             self._step_and_report(LowLevelActions.PRESS_BUTTON_START, transition_states)
             self._wait_one_emulated_second(transition_states)
         return (
-            self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
+            parser.get_start_menu_first_option(self._emulator.get_current_frame())
+            is None
+            and self._state_tracker.get_episode_metric(("pokemon_core", "agent_state"))
             == AgentState.FREE_ROAM
         )
 
     def _execute(self):
-        parser: PokemonRedStateParser = self._emulator.state_parser
+        parser: BasePokemonRedStateParser = self._emulator.state_parser
         transition_states = []
 
         # Open the START menu and use the tracker state rather than an image
@@ -910,7 +933,7 @@ class GetTeamInfoAction(SingleHighLevelAction):
             )
 
         pokemon = []
-        for slot_index in range(self._MAX_TEAM_SLOTS):
+        for slot_index in range(self._MAX_TEAM_ITERATIONS):
             # Read only the currently selected party row before opening it.
             pokemon_info = parser.get_team_slot_info(
                 self._emulator.get_current_frame(), slot_index
